@@ -660,9 +660,9 @@ def load_image(item,collection,interrupt_fn,draft_mode=False,apply_transforms=Tr
                 width,height = image_pb.get_width(),image_pb.get_height()
                 if image_pb.get_n_channels() >=3:
                     if image_pb.get_has_alpha():
-                        image=Image.fromstring("RGBA",(width,height),image_pb.get_pixels() )
+                        image=Image.frombytes("RGBA",(width,height),image_pb.get_pixels() )
                     else:
-                        image=Image.fromstring("RGB",(width,height),image_pb.get_pixels() )
+                        image=Image.frombytes("RGB",(width,height),image_pb.get_pixels() )
                 else:
                     print "GDK Parser - Can't handle image with less than 3 channel"
                     raise TypeError
@@ -730,7 +730,7 @@ def image_to_pixbuf(im):
     pixbuf=None
     w,h=im.size
     if 'R' in bands and 'G' in bands and 'B' in bands:
-        pixbuf=gtk.gdk.pixbuf_new_from_data(im.tostring(), gtk.gdk.COLORSPACE_RGB, rgba, 8, w, h, w*(3+rgba))
+        pixbuf=gtk.gdk.pixbuf_new_from_data(im.tobytes(), gtk.gdk.COLORSPACE_RGB, rgba, 8, w, h, w*(3+rgba))
     if 'P' in bands:
         fmt="gif"
         file1 = StringIO.StringIO()
@@ -754,7 +754,7 @@ def pixbuf_to_image(pb):
     ch = pb.get_n_channels()
 
     width,height = pb.get_width(),pb.get_height()
-    image = Image.fromstring("RGB",(width,height),pb.get_pixels() )
+    image = Image.frombytes("RGB",(width,height),pb.get_pixels() )
 
     return image
 
@@ -887,7 +887,7 @@ def rotate_thumb(item,right=True,interrupt_fn=None):
             thumbrgba='A' in image.getbands()
             width=thumbsize[0]
             height=thumbsize[1]
-            thumb_pb=gtk.gdk.pixbuf_new_from_data(data=image.tostring(), colorspace=gtk.gdk.COLORSPACE_RGB, has_alpha=thumbrgba, bits_per_sample=8, width=width, height=height, rowstride=width*(3+thumbrgba)) #last arg is rowstride
+            thumb_pb=gtk.gdk.pixbuf_new_from_data(data=image.tobytes(), colorspace=gtk.gdk.COLORSPACE_RGB, has_alpha=thumbrgba, bits_per_sample=8, width=width, height=height, rowstride=width*(3+thumbrgba)) #last arg is rowstride
             return thumb_pb
         except:
             return False
