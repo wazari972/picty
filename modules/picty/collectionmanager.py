@@ -37,11 +37,16 @@ except:
     pass
 try:
     from collectiontypes import flickr
-except:
-    pass
+except ImportError as e:
+    print e
 try:
     from collectiontypes import facebook
 except:
+    pass
+try:
+    from collectiontypes import webalbumscoll
+except ImportError as e:
+    import pdb;pdb.set_trace()
     pass
 
 COLUMN_ID=0

@@ -57,6 +57,8 @@ userplugins = set(userplugins)
 #import the global and user modules containing plugins
 for p in plugins:
     try:
+        if p == "picty.plugins.old":
+            continue
         print 'Importing system plugin',p
         __import__(p)
     except:
