@@ -69,6 +69,11 @@ import simpleview
 
 from webalbums.downloader import tools as wad_tools
 
+def import_pdb_set_trace():
+    from PyQt5.QtCore import pyqtRemoveInputHook
+    pyqtRemoveInputHook()
+    import pdb;pdb.set_trace()
+
 def cb(xml, url, name): return False
 
 wad_tools.callback = cb
@@ -388,8 +393,13 @@ class WalkWebAlbumThemeJob(backend.WorkerJob):
         self.notify_items = []
         self.done = False
         self.last_walk_state = None
-
+        self.do_login = True
+        
     def _walk_albums(self):
+        
+        if self.do_login:
+            self.collection._login()
+        
         first_album_page = wad_tools.get_an_albumSet(parse_and_transform=True, save=False)
         
         if first_album_page is None:
@@ -425,8 +435,10 @@ class WalkWebAlbumThemeJob(backend.WorkerJob):
             else:
                 nb_photo_pages = 0
 
-            yield 0
-            yield 1
+            photos = first_photo_page.find("photos").find("display").find("photoList")
+
+            for photo in photos.findall("photo"):
+                yield photo
             
     def __call__(self):
         collection = self.collection
@@ -451,23 +463,24 @@ class WalkWebAlbumThemeJob(backend.WorkerJob):
             
             while jobs.ishighestpriority(self):
                 photo = self.collection_walker.next()
-
-                path = photo.path
+                #print(photo)
+                #import_pdb_set_trace()
+                
+                path = photo.find("details").find("photoId").text
                 r = path.rfind('.')
                 if r <= 0:
                     continue
+
+                ROOT=
+                fullpath = "/var/webalbums/images/"+path
                 
-                fullpath = ""
-                
-                relpath = os.path.relpath(os.path.join(root, path), scan_dir)
+                #relpath = os.path.relpath(os.path.join(root, path), scan_dir)
                 mimetype = io.get_mime_type(fullpath)
-                
-                # skip whatever is not relevant
                 
                 mtime = io.get_mtime(fullpath)
                 st = os.stat(fullpath)
                 
-                item = baseobjects.Item(relpath)
+                item = baseobjects.Item(path)
                 item.mtime = mtime
                 
                 if collection.find(item) < 0:
@@ -643,7 +656,6 @@ class Theme(baseobjects.CollectionBase):
     def disconnect(self):
         if not self.is_open:
             return False
-        self.end_monitor()
         self.online = False
         return True
 
@@ -654,10 +666,17 @@ class Theme(baseobjects.CollectionBase):
 
     def create_store(self):
         log.info('New WA theme created: {}'.format(self.name))
-        
+        pass
+
+    def _login(self):
         try:
-            wad_tools.login("kevin", "", save_index=False, do_static=False, get_xslt=False, parse_and_transform=True)
-            self.choix = wad_tools.get_choix(9, name="Grenoble", want_static=False, want_background=False,
+            
+            wad_tools.login("kevin", "", save_index=False,
+                            do_static=False, get_xslt=False,
+                            parse_and_transform=True)
+            wad_tools.get_index(do_static=True)
+            self.choix = wad_tools.get_choix(9, name="Grenoble", want_static=False,
+                                             want_background=False,
                                              save=False, parse_and_transform=True)
             return True
         except Exception as e:
@@ -666,6 +685,16 @@ class Theme(baseobjects.CollectionBase):
 
     def open(self, thread_manager, browser=None):
         log.info('Open {} theme '.format(self.name))
+
+        try:
+            with open(self.data_file(),'rb') as data_f:
+                log.warn("read {} from {}".format(data_f.readlines(),
+                                                  self.data_file()))
+
+            self.load_prefs()
+        except IOError as e:  # could not open/read
+            log.critical("Could not load collection '{}' from file: {}".format(self.name, e))
+            
         
         job = LoadWebAlbumsThemeJob(thread_manager, self, browser)
         thread_manager.queue_job_instance(job)
@@ -683,6 +712,17 @@ class Theme(baseobjects.CollectionBase):
         save the collection to a binary pickle file using the filename attribute of the collection
         '''
         log.info('Close {} theme '.format(self.name))
+        col_dir = self.coll_dir()
+
+        if not os.path.exists(col_dir):
+            os.makedirs(col_dir)
+            
+        with open(self.data_file(), 'wb') as fdata:
+            fdata.write(self.name)
+            
+        log.warn("saved {} into {}".format(self.name, self.data_file()))
+        self.save_prefs()
+        
         return True
 
     def rescan(self, thead_manager):
