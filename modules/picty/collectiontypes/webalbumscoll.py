@@ -21,6 +21,7 @@ License:
 
 __version__ = '0.8'
 
+ROOT = "/var/webalbums/"
 
 # standard imports
 import bisect
@@ -197,7 +198,7 @@ def altname(pathname):
     i = 0
     while os.path.exists(pathname):
         i += 1
-        aname = name + '_(%i)' % i
+        aname = name + '_({})'.format(i)
         pathname = os.path.join(dirname, aname + ext)
     return pathname
 
@@ -416,29 +417,10 @@ class WalkWebAlbumThemeJob(backend.WorkerJob):
         #     nb_album_pages = 0
         
         for album in first_album_page.find("albums").find("display").find("albumList").findall("album"):
-            album_id = album.get("id")
+            #album_id = album.get("id")
+            #album_name = album.find("name").text
 
-            album_name = album.find("name").text
-
-            first_photo_page = wad_tools.get_a_photoSet(album_id, name=album_name, full=False)
-
-            if first_photo_page is None:
-                msg = "Couldn't fetch photo page for album {}".format(album_id, album_name)
-                log.critical(msg)
-                raise Exception(msg)
-
-            page = first_photo_page.find("photos").find("display").find("photoList").find("page")
-            if page.get("last") is not None:
-                nb_photo_pages = int(page.get("last"))
-            elif page.find("next") is not None:
-                nb_photo_pages = int(page.find("next[last()]").text)
-            else:
-                nb_photo_pages = 0
-
-            photos = first_photo_page.find("photos").find("display").find("photoList")
-
-            for photo in photos.findall("photo"):
-                yield photo
+            yield album
             
     def __call__(self):
         collection = self.collection
@@ -446,7 +428,7 @@ class WalkWebAlbumThemeJob(backend.WorkerJob):
         self.last_update_time = time.time()
         try:
             if not self.collection_walker:
-                log.info('Starting WebAlbums theme walk on %s', collection.name)
+                log.info('Starting WebAlbums theme walk on {}'.format(collection.name))
                 self.collection_walker = self._walk_albums()
                 self.done = False
                 pluginmanager.mgr.suspend_collection_events(self.collection)
@@ -454,51 +436,50 @@ class WalkWebAlbumThemeJob(backend.WorkerJob):
         except StopIteration:
             self.notify_items = []
             self.collection_walker = None
-            log.error('Aborted directory walk on %s', collection.image_dirs[0])
+            log.error('Aborted directory walk on {}'.format(collection.name))
             return True
 
-        while jobs.ishighestpriority(self):
+        while jobs.ishighestpriority(self) and not self.done:
 
             backend.idle_add(self.browser.update_backstatus, True, 'Scanning for new images')
             
             while jobs.ishighestpriority(self):
-                photo = self.collection_walker.next()
-                #print(photo)
+                try:
+                    photo = self.collection_walker.next()
+                except StopIteration:
+                    self.done = True
+                    break
+                
                 #import_pdb_set_trace()
                 
-                path = photo.find("details").find("photoId").text
-                r = path.rfind('.')
-                if r <= 0:
-                    continue
+                try:
+                    if photo.find("details").get("isGpx") == "true":
+                        continue
+                except Exception as e:
+                    log.warn(e)
+                    pass
 
-                ROOT=
-                fullpath = "/var/webalbums/images/"+path
+                path = photo.find("details").find("photoId").text
                 
-                #relpath = os.path.relpath(os.path.join(root, path), scan_dir)
-                mimetype = io.get_mime_type(fullpath)
+                fullpath = "{}/images/{}".format(ROOT, path)
                 
-                mtime = io.get_mtime(fullpath)
-                st = os.stat(fullpath)
-                
-                item = baseobjects.Item(path)
-                item.mtime = mtime
+                item = baseobjects.Item(fullpath)
                 
                 if collection.find(item) < 0:
-                    if not collection.verify_after_walk:
-                        if collection.load_meta:
-                            collection.load_metadata(item, notify_plugins=False)
-                        elif collection.load_preview_icons:
-                            collection.load_thumbnail(item)
-                            if not item.thumb:
-                                item.thumb = False
-                                
-                        self.browser.lock.acquire()
-                        collection.add(item)
-                        self.browser.lock.release()
-                        
-                        backend.idle_add(self.browser.resize_and_refresh_view, self.collection)
-                    else:
-                        self.notify_items.append(item)
+                    # if collection.load_meta:
+                    #     collection.load_metadata(item, notify_plugins=False)
+                    # elif collection.load_preview_icons:
+                    #     collection.load_thumbnail(item)
+                    #     if not item.thumb:
+                    #         item.thumb = False
+                            
+                    item.mtime = io.get_mtime(fullpath)
+                    
+                    self.browser.lock.acquire()
+                    collection.add(item)
+                    self.browser.lock.release()
+                    
+                    backend.idle_add(self.browser.resize_and_refresh_view, self.collection)
                         
             # once we have found enough items, add to collection and notify browser
             if time.time() > self.last_update_time+1.0 or len(self.notify_items) > 100:
@@ -507,6 +488,7 @@ class WalkWebAlbumThemeJob(backend.WorkerJob):
                 self.browser.lock.acquire()
                 for item in self.notify_items:
                     collection.add(item, False)
+                    
                 self.browser.lock.release()
                 
                 backend.idle_add(self.browser.resize_and_refresh_view, self.collection)
@@ -515,30 +497,17 @@ class WalkWebAlbumThemeJob(backend.WorkerJob):
         if not self.done:
             return False
     
-        log.info('Directory walk complete for {}'.format(collection.image_dirs[0]))
+        log.info('Directory walk complete for {}'.format(collection))
             
         backend.idle_add(self.browser.resize_and_refresh_view, self.collection)
         backend.idle_add(self.browser.update_backstatus, False, 'Search complete')
-            
-        if self.notify_items:
-            self.browser.lock.acquire()
-            for item in self.notify_items:
-                collection.add(item)
-            self.browser.lock.release()
-                
-            backend.idle_add(self.browser.resize_and_refresh_view, self.collection)
-                
+                            
         self.notify_items = []
         self.collection_walker = None
         self.done = False
             
         pluginmanager.mgr.resume_collection_events(self.collection)
-            
-        if collection.verify_after_walk:
-            self.worker.queue_job_instance(VerifyImagesJob(self.worker, self.collection, self.browser))
-            
-        self.collection_walker = None
-
+        
         return True
                
     
@@ -554,15 +523,15 @@ class LoadWebAlbumsThemeJob(backend.WorkerJob):
         view = self.collection.get_active_view()
         collection = self.collection
         
-        log.info('Loading collection file %s with type %s', self.collection_file, collection.type)
+        log.info('Loading collection file {} with type {}'.format(self.collection_file, collection.type))
         
-        backend.idle_add(self.browser.update_backstatus, True, 'Loading Collection: %s' % (self.collection_file,))
+        backend.idle_add(self.browser.update_backstatus, True, 'Loading Collection: {}'.format(self.collection_file))
         view.empty()
         
         pluginmanager.mgr.callback('t_view_emptied',collection,view)
         
         if collection._open():
-            log.info('Collection opened %s', collection.id)
+            log.info('Collection opened {}'.format(collection.id))
             
             collection.online = True
             self.worker.queue_job_instance(WalkWebAlbumThemeJob(self.worker,self.collection,self.browser))
@@ -580,7 +549,7 @@ class LoadWebAlbumsThemeJob(backend.WorkerJob):
                 
             log.info('Loaded collection with {} images'.format(len(collection)))
         else:
-            log.error('Load collection failed %s %s', collection.id, collection.type)
+            log.error('Load collection failed {} {}'.format(collection.id, collection.type))
             
         self.collection_file = ''
         
@@ -623,7 +592,11 @@ class Theme(baseobjects.CollectionBase):
         # file if it exists)
         
         self.use_sidecars = False
-
+        self.load_preview_icons=False
+        self.load_embedded_thumbs=False
+        self.thumbnail_cache_dir=None
+        self.store_thumbnails=True
+        
         # the collection optionally has a filesystem monitor and views (i.e.
         # subsets) of the collection of images
         self.monitor = None
@@ -642,6 +615,11 @@ class Theme(baseobjects.CollectionBase):
                             PREFERENCES, OPENING AND CLOSING
         ************************************************************************'''
 
+    @property
+    def image_dirs(self):
+        log.critical("someone wants image_dirs ... ")
+        return ["{}{}".format(ROOT, self.name)]
+                         
     def set_prefs(self, prefs):
         baseobjects.CollectionBase.set_prefs(self, prefs)
 
@@ -660,7 +638,7 @@ class Theme(baseobjects.CollectionBase):
         return True
 
     def delete_store(self):
-        log.info('WA them {} created'.format(self.name))
+        log.info('WA theme {} created'.format(self.name))
         return True
     
 
@@ -670,7 +648,6 @@ class Theme(baseobjects.CollectionBase):
 
     def _login(self):
         try:
-            
             wad_tools.login("kevin", "", save_index=False,
                             do_static=False, get_xslt=False,
                             parse_and_transform=True)
@@ -739,25 +716,61 @@ class Theme(baseobjects.CollectionBase):
         add an item to the collection and notify plugin
         '''
         log.info('Adding {} to collection {}'.format(item, self))
-        return False
+
+        idx = bisect.bisect_left(self.items, item)
+        if 0 <= idx < len(self.items) and self.items[idx] == item:
+            log.warning("tried to add {}/{} to collection {} but an item with this id was already present".format(item, ind, self.id))
+            return False
+            
+        self.items.insert(idx, item)
+        self.numselected += item.selected
+
+        pluginmanager.mgr.callback_collection('t_collection_item_added', self, item)
+            
+        if add_to_view:
+            for view in self.views:
+                view.add_item(item)
+        return True
+        
 
     def delete(self, item, delete_from_view=True):
         '''
         delete an item from the collection, returning the item to the caller if present
         notifies plugins if the item is remmoved
         '''
-        i = self.find(item)
         log.info('Removing {} from collection {}'.format(item, self))
-
-        return None
+        idx = self.find(item)
+        
+        if idx < 0:
+            return None
+        
+        item = self.items[idx]
+            
+        self.numselected -= item.selected
+        self.items.pop(idx)
+            
+        pluginmanager.mgr.callback_collection('t_collection_item_removed', self, item)
+            
+        for view in self.views:
+            view.del_item(item)
+            
+        return item
 
     def find(self, item):
         '''
         find an item in the collection and return its index
         '''
-        log.info('Find {} from collection {}'.format(item, self))
+        log.debug('Find {} from collection {}'.format(item, self))
 
-        return -1
+        idx = bisect.bisect_left(self, item)
+        
+        if not (0 <= idx < len(self.items)):
+            return -1
+        
+        if self.items[idx] != item:
+            return -1
+        
+        return idx
 
     def get_mtime(self, item):
         log.info('mtime {} from collection {}'.format(item, self))
@@ -770,12 +783,11 @@ class Theme(baseobjects.CollectionBase):
         beware that this uses the hack that the item is derived from str
         and the content of the string is the uid
         '''
-        log.info('Path of {} from collection {}'.format(item, self))
-        return os.path.join(self.image_dirs[0], item)
+        log.debug('Path of {} from collection {}'.format(item, self))
+        return os.path.join(ROOT, item)
 
     def item_exists(self, item):
         log.info('Exists {} from collection {}'.format(item, self))
-        
         return os.path.exists(self.get_path(item))
 
     def get_relpath(self, path):
@@ -795,15 +807,13 @@ class Theme(baseobjects.CollectionBase):
 
     def get_all_items(self):
         log.info('get all items from collection {}'.format(self))
-        
         return self.items[:]
 
     def empty(self, empty_views=True):
         pass
 
     def __len__(self):
-        log.info('get len from collection {}'.format(self))
-
+        log.debug('get len from collection {}'.format(self))
         return len(self.items)
 
     ''' ************************************************************************
@@ -877,6 +887,7 @@ class Theme(baseobjects.CollectionBase):
 
     def load_metadata(self, item, missing_only=False, notify_plugins=True):
         'retrieve metadata for an item from the source'
+        
         if self.load_embedded_thumbs:
             result = imagemanip.load_metadata(item, collection=self, filename=self.get_path(item),
                                               get_thumbnail=True, missing_only=missing_only,
@@ -951,16 +962,16 @@ class Theme(baseobjects.CollectionBase):
             val = viewsupport.get_focal(item)
             exposure = u''
             if val:
-                exposure += '%imm ' % (int(val),)
+                exposure += '{}mm '.format(val)
             val = viewsupport.get_aperture(item)
             if val:
                 exposure += 'f/%3.1f' % (val,)
             val = viewsupport.get_speed_str(item)
             if val:
-                exposure += ' %ss' % (val,)
+                exposure += ' {}s'.format(val)
             val = viewsupport.get_iso_str(item)
             if val:
-                exposure += ' iso%s' % (val,)
+                exposure += ' iso{}'.format(val)
             if exposure:
                 if details and not details.endswith('\n'):
                     details += '\n'
