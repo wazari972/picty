@@ -258,6 +258,7 @@ class FolderSidebarPlugin(pluginbase.Plugin):
         """collection has loaded into main frame"""
         if not collection.local_filesystem:
             return
+        
         self.folderframe.folder_cloud[collection] = FolderTree()
         view = collection.get_active_view()
         if view:

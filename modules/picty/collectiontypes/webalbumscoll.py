@@ -38,17 +38,7 @@ import time
 import logging
 import traceback
 
-LOG_LEVEL = logging.DEBUG
-LOGFORMAT = "  %(log_color)s%(levelname)-8s%(reset)s | %(log_color)s%(message)s%(reset)s"
-from colorlog import ColoredFormatter
-logging.root.setLevel(LOG_LEVEL)
-formatter = ColoredFormatter(LOGFORMAT)
-stream = logging.StreamHandler()
-stream.setLevel(LOG_LEVEL)
-stream.setFormatter(formatter)
-log = logging.getLogger('webalbums_collect')
-log.setLevel(LOG_LEVEL)
-log.addHandler(stream)
+log = logging.getLogger('webalbums.collect')
 
 # picty imports
 from picty import pluginmanager
@@ -385,19 +375,17 @@ class NewThemeWidget(gtk.VBox):
 
     def set_values(self,val_dict):
         self.name_entry.set_text(val_dict['name'])
-
+        
 class WalkWebAlbumThemeJob(backend.WorkerJob):
     '''this walks the collection directory adding new items to the collection (but not to the view)'''
     def __init__(self, worker, collection, browser):
         backend.WorkerJob.__init__(self, 'WALKDIRECTORY', 700, worker, collection, browser)
         self.collection_walker = None
-        self.notify_items = []
         self.done = False
-        self.last_walk_state = None
         self.do_login = True
+        self.notify_items = []
         
     def _walk_albums(self):
-        
         if self.do_login:
             self.collection._login()
         
@@ -407,19 +395,7 @@ class WalkWebAlbumThemeJob(backend.WorkerJob):
             log.critical("Couldn't fetch albums page")
             raise Exception("Couldn't fetch albums page")
         
-        # page = first_album_page.find("albums").find("display").find("albumList").find("page")
-        
-        # if page.get("last") is not None:
-        #     nb_album_pages = int(page.get("last"))
-        # elif page.find("next") is not None:
-        #     nb_album_pages = int(page.find("next[last()]").text)
-        # else:
-        #     nb_album_pages = 0
-        
         for album in first_album_page.find("albums").find("display").find("albumList").findall("album"):
-            #album_id = album.get("id")
-            #album_name = album.find("name").text
-
             yield album
             
     def __call__(self):
@@ -534,8 +510,9 @@ class LoadWebAlbumsThemeJob(backend.WorkerJob):
             log.info('Collection opened {}'.format(collection.id))
             
             collection.online = True
-            self.worker.queue_job_instance(WalkWebAlbumThemeJob(self.worker,self.collection,self.browser))
-            WalkWebAlbumThemeJob(self.worker,self.collection,self.browser)()
+            
+            job = WalkWebAlbumThemeJob(self.worker, self.collection, self.browser)
+            self.worker.queue_job_instance(job)
             
             pluginmanager.mgr.callback_collection('t_collection_loaded',collection)
             
@@ -617,7 +594,7 @@ class Theme(baseobjects.CollectionBase):
 
     @property
     def image_dirs(self):
-        log.critical("someone wants image_dirs ... ")
+        log.warn("someone wants image_dirs ... ")
         return ["{}{}".format(ROOT, self.name)]
                          
     def set_prefs(self, prefs):

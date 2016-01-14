@@ -33,32 +33,11 @@ from picty import backend
 from picty import settings
 from picty.uitools import dialogs
 
+from webalbums.downloader import tools as wad_tools
+
 import logging
-log = logging.getLogger('webalbums_tagui')
 
-class TagCloudRebuildJob(backend.WorkerJob):
-
-    def __init__(self, worker, collection, browser, tagframe):
-        backend.WorkerJob.__init__(self, 'TAGCLOUDREBUILD')
-        self.tagframe = tagframe
-
-    def __call__(self):
-        if not self.tagframe:
-            return True
-        
-        self.tagframe.tag_cloud.empty()
-        for item in self.collection:
-            self.tagframe.tag_cloud.add(item)
-            
-        self.tagframe.tag_cloud_view.empty()
-        for item in self.view:
-            self.tagframe.tag_cloud_view.add(item)
-            
-        if self.tagframe:
-            gobject.idle_add(self.tagframe.start_refresh_timer)
-            
-        return True
-
+log = logging.getLogger('webalbums.tag')
 
 class TagCloud():
 
@@ -145,15 +124,116 @@ class TagCloud():
 # M_PIXPATH=5 #path to pixbuf
 
 user_tag_layout_default = [
-    ((0, 0), 2, 'People', '<b>People</b>', None),
-    ((0, 1), 2, 'Places', '<b>Places</b>', None),
-    ((0, 2), 2, 'Events', '<b>Events</b>', None)
+    ((0, 0), 2, 'loading', '<b>loading ...</b>', None),
 ]
 
+def import_pdb_set_trace():
+    from PyQt5.QtCore import pyqtRemoveInputHook
+    pyqtRemoveInputHook()
+    import pdb;pdb.set_trace()
+
+class WalkWebAlbumTagTreeJob(backend.WorkerJob):
+    
+    def __init__(self, worker, collection, browser, tagframe):
+        backend.WorkerJob.__init__(self, 'WALKDIRECTORY', 700, worker, collection, browser)
+        self.done = False
+        self.last_walk_state = None
+        self.tag_walker = None
+        self.tagframe = tagframe
+        self.user_tag_info = []
+        self.tree_path_position = [0, -1]
+        
+    def _walk_taginfo(self, taginfo):
+        tag = taginfo.find("tag")
+        
+        tid = tag.get("id")
+        name = tag.find("name").text
+
+        yield tid, name
+
+        children = taginfo.find("children")
+        
+        if not len(children):
+            return
+
+        yield True
+        for taginfo in children.findall("tagInfo"):
+            for tag in self._walk_taginfo(taginfo):
+                yield tag
+                
+        yield False
+    
+    def _walk_tagtree(self):
+        tagtree = wad_tools.get_a_page("Tags?special=CLOUD", save=False, parse_and_transform=True)
+
+        for taginfo in tagtree.find("tags").find("cloud").findall("tagInfo"):
+            for tag in self._walk_taginfo(taginfo):
+                yield tag
+            
+    def __call__(self):
+        """ Example of tree_path: [
+        [tree_path, type,tag_name,display_text,   icon_path]
+        [[0, 0],    2, 'People', '<b>People</b>', '.../People'], 
+        [[0, 0, 0], 3, 'toto',   'toto (0)',      '.../toto'],
+        [[0, 1],    2, 'Places', '<b>Places</b>', '.../Places'],
+        [[0, 2],    2, 'Events', '<b>Events</b>', '.../Events'], 
+        [[0, 2, 0], 2, 'cat',    '<b>cat</b>',    '.../cat']
+        ]"""
+
+        jobs = self.worker.jobs
+
+        try:
+            if not self.tag_walker:
+                log.info('Starting WebAlbums tagtree walk on {}'.format(self.collection.name))
+                self.tag_walker = self._walk_tagtree()
+                self.done = False
+                
+        except StopIteration:
+            self.collection_walker = None
+            log.error('Aborted directory walk on {}'.format(self.collection.name))
+            return True
+
+        while jobs.ishighestpriority(self) and not self.done:
+            backend.idle_add(self.browser.update_backstatus, True, 'Scanning the tag tree')
+            
+            try:
+                tag = self.tag_walker.next()
+            except StopIteration:
+                self.done = True
+                break
+
+
+            
+            if tag is True:     
+                self.tree_path_position.append(-1)
+                continue
+            elif tag is False:
+                self.tree_path_position.pop()
+                continue
+            else:
+                uid, name = tag
+                
+            self.tree_path_position[-1] += 1
+            tree_path = []
+            tree_path[:] = self.tree_path_position
+                
+            TYPE = 2
+            ICON_PATH = None
+                
+            entry = (tree_path, TYPE, name, "<b>{}</b>".format(name), ICON_PATH)
+            print("{} {}".format(entry[0], name))
+            self.user_tag_info.append(entry)
+
+        if self.done:
+            self.tagframe.set_user_tags(self.user_tag_info)
+        
+            return True
+        else:
+            return False
 
 class WebAlbumsTagSidebarPlugin(pluginbase.Plugin):
     name = 'WebAlbumsTagSidebar'
-    display_name = 'Tag'
+    display_name = 'Tags'
     api_version = '0.1.0'
     version = '0.1.0'
 
@@ -166,19 +246,14 @@ class WebAlbumsTagSidebarPlugin(pluginbase.Plugin):
         self.block_refresh = {}
         user_tag_layout = user_tag_layout_default
         data = settings.load_addon_prefs('tag_plugin_settings')
-        
-        if data:
-            user_tag_layout = data['tag_layout']
-        else:
-            try:
-                with open(os.path.join(settings.data_dir, 'tag-layout'), 'rb') as f:
-                    user_tag_layout_version = cPickle.load(f)
-                    user_tag_layout = cPickle.load(f)
-                # todo: could flush unused bitmaps out of the png_path
-            except Exception as e:
-                log.info('Tag Plugin: No tag layout data found ({})'.format(e))
-                
-        self.tagframe = TagFrame(self.mainframe, user_tag_layout)
+
+        # ignore save tag_layout
+        #if data:
+        #   user_tag_layout = data['tag_layout']
+        #
+
+        # use loading layout for now
+        self.tagframe = TagFrame(self.mainframe, user_tag_layout_default)
         self.tagframe.show_all()
         
         self.mainframe.sidebar.append_page(self.tagframe, gtk.Label("WebAlbums Tags"))
@@ -197,16 +272,25 @@ class WebAlbumsTagSidebarPlugin(pluginbase.Plugin):
 
     def t_collection_item_added(self, collection, item):
         """item was added to the collection"""
+        log.error("add {} to {}".format(item, collection))
+        return
+    
         self.tagframe.tag_cloud[collection].add(item)
         self.thread_refresh()
 
     def t_collection_item_removed(self, collection, item):
         """item was removed from the collection"""
+        log.error("remove {} from {}".format(item, collection))
+        return
+    
         self.tagframe.tag_cloud[collection].remove(item)
         self.thread_refresh()
 
     def t_collection_item_metadata_changed(self, collection, item, meta_before):
         """item metadata has changed"""
+        log.error("changed metadata {} from {}".format(item, collection))
+        return
+    
         if collection != None:
             self.tagframe.tag_cloud[collection].update(item, meta_before)
             i = collection.get_active_view().find_item(item)
@@ -217,18 +301,29 @@ class WebAlbumsTagSidebarPlugin(pluginbase.Plugin):
 
     def t_collection_item_added_to_view(self, collection, view, item):
         """item in collection was added to view"""
+        log.error("item added to view {} from  {}".format(item, collection))
+        return
+    
         self.tagframe.tag_cloud_view[view].add(item)
         self.thread_refresh()
 
     def t_collection_item_removed_from_view(self, collection, view, item):
         """item in collection was removed from view"""
+        log.error("item remove from view {} from  {}".format(item, collection))
+        return
         self.tagframe.tag_cloud_view[view].remove(item)
         self.thread_refresh()
 
     def t_collection_modify_start_hint(self, collection):
+        log.error("modify start hind from  {}".format(collection))
+        return
+    
         self.block_refresh[collection] = True
 
     def t_collection_modify_complete_hint(self, collection):
+        log.error("modify complete hind from  {}".format(collection))
+        return
+    
         del self.block_refresh[collection]
         self.thread_refresh()
 
@@ -237,7 +332,8 @@ class WebAlbumsTagSidebarPlugin(pluginbase.Plugin):
             gobject.idle_add(self.tagframe.start_refresh_timer)
 
     def tag_dropped_in_browser(self, mainframe, browser, item, tag_widget, path):
-        log.info('Tag Plugin: dropped', tag_widget, path)
+        log.critical("tag {} dropped from item {} from {}".format(path, item, collection))
+        return
         
         tags = self.tagframe.get_tags(path)
         if not item.selected:
@@ -247,6 +343,12 @@ class WebAlbumsTagSidebarPlugin(pluginbase.Plugin):
 
     def t_collection_loaded(self, collection):
         """collection has loaded into main frame"""
+        log.critical("collection {} loaded".format(collection))
+        
+        job = WalkWebAlbumTagTreeJob(self.worker, collection, self.mainframe.active_browser(), self.tagframe)
+        self.worker.queue_job_instance(job)
+
+        return
         
         self.tagframe.tag_cloud[collection] = TagCloud()
         view = collection.get_active_view()
@@ -258,6 +360,8 @@ class WebAlbumsTagSidebarPlugin(pluginbase.Plugin):
         self.thread_refresh()
 
     def t_collection_closed(self, collection):
+        log.critical("collection {} closed".format(collection))
+        
         del self.tagframe.tag_cloud[collection]
         try:
             del self.tagframe.tag_cloud_view[collection.get_active_view()]
@@ -266,16 +370,19 @@ class WebAlbumsTagSidebarPlugin(pluginbase.Plugin):
         self.thread_refresh()
 
     def collection_activated(self, collection):
+        log.critical("collection {} activated".format(collection))
         self.tagframe.refresh()
 
     def t_view_emptied(self, collection, view):
         """the view has been flushed"""
+        log.critical("collection {} emptied".format(collection))
         
         self.tagframe.tag_cloud_view[view] = TagCloud()
         self.tagframe.refresh()
 
     def t_view_updated(self, collection, view):
         """the view has been updated"""
+        log.critical("view updated from {}".format(collection))
         
         self.tagframe.tag_cloud_view[view] = TagCloud()
         for item in view:
@@ -283,12 +390,16 @@ class WebAlbumsTagSidebarPlugin(pluginbase.Plugin):
         self.tagframe.refresh()
 
     def view_rebuild_complete(self, mainframe, browser):
+        log.critical("view rebuild complete from {}".format(browser))
         self.tagframe.refresh()
 
     def load_user_tags(self, filename):
+        log.error("load user tags from {}".format(filename))
+        
         pass
 
     def save_user_tags(self, filename):
+        log.error("save user tags from {}".format(filename))
         pass
 
 ##
@@ -745,6 +856,7 @@ class TagFrame(gtk.VBox):
             parent = self.model.get_iter(path[0:len(path) - 1])
             self.model.append(parent, [row[1], row[2], None, row[3], False, row[4]])
             self.user_tags[row[2]] = gtk.TreeRowReference(self.model, path)
+
         self.load_user_bitmaps(usertaginfo)
 
     def get_user_tags_rec(self, usertaginfo, iter):
